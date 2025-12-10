@@ -180,6 +180,11 @@ Resources:
                   - kms:GenerateDataKey
                   - kms:Encrypt
                 Resource: !GetAtt ArtifactKey.Arn
+              # Allow CodeBuild to use the CodeStar connection when using CODEBUILD_CLONE_REF
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref CodeStarConnectionArn
 
   # 3. CloudFormation Deployment Role
   CloudFormationServiceRole:
@@ -256,7 +261,9 @@ Resources:
           artifacts:
             files:
               - '**/*'
-            name: !Sub "${ClusterName}-artifact-$CODEBUILD_RESOLVED_SOURCE_VERSION"
+            # Avoid CloudFormation intrinsics inside the buildspec so CodeBuild doesn't see !Sub
+            # The artifact name will just use the resolved commit ID at build time.
+            name: "artifact-$CODEBUILD_RESOLVED_SOURCE_VERSION"
 
   # -------------------------------------------------------------------------
   # Project 2: Validate & Preview (Reusable)
