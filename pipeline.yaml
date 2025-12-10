@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   Pipeline to deploy VPC and EKS Cluster to Dev and QA environments.
-  Creates its own S3 Bucket and IAM Roles based on the ClusterName.
+  Creates its own S3 Bucket, KMS Key, and IAM Roles based on the ClusterName.
   Includes Validation/Preview steps before deployment.
 
 Parameters:
@@ -25,6 +25,47 @@ Parameters:
 
 Resources:
   # -------------------------------------------------------------------------
+  # KMS Key for Artifact Encryption
+  # -------------------------------------------------------------------------
+  ArtifactKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub KMS Key for ${ClusterName} Pipeline Artifacts
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: !Sub ${ClusterName}-KeyPolicy
+        Statement:
+          # Allow Root User (Admin) to manage key
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          # Allow Pipeline, CodeBuild, CloudFormation Roles to use key
+          - Sid: Allow Service Roles
+            Effect: Allow
+            Principal:
+              AWS:
+                - !GetAtt PipelineServiceRole.Arn
+                - !GetAtt CodeBuildServiceRole.Arn
+                - !GetAtt CloudFormationServiceRole.Arn
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+
+  ArtifactKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/${ClusterName}-pipeline-key
+      TargetKeyId: !Ref ArtifactKey
+
+  # -------------------------------------------------------------------------
   # S3 Bucket for Artifacts
   # -------------------------------------------------------------------------
   ArtifactBucket:
@@ -36,7 +77,8 @@ Resources:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref ArtifactKey
 
   # -------------------------------------------------------------------------
   # IAM Roles
@@ -96,6 +138,13 @@ Resources:
                 Action:
                   - iam:PassRole
                 Resource: !GetAtt CloudFormationServiceRole.Arn
+              # KMS Access
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                  - kms:Encrypt
+                Resource: !GetAtt ArtifactKey.Arn
 
   # 2. CodeBuild Role
   CodeBuildServiceRole:
@@ -125,6 +174,7 @@ Resources:
                   - s3:GetObject
                   - s3:GetObjectVersion
                   - s3:PutObject
+                  - s3:GetBucketLocation
                 Resource: 
                   - !GetAtt ArtifactBucket.Arn
                   - !Sub ${ArtifactBucket.Arn}/*
@@ -137,6 +187,13 @@ Resources:
                   - cloudformation:DeleteChangeSet
                   - cloudformation:ValidateTemplate
                 Resource: !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ClusterName}-*
+              # KMS Access
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                  - kms:Encrypt
+                Resource: !GetAtt ArtifactKey.Arn
 
   # 3. CloudFormation Deployment Role
   CloudFormationServiceRole:
@@ -165,6 +222,12 @@ Resources:
               - Effect: Allow
                 Action: '*'
                 Resource: '*'
+              # KMS Access (to decrypt template)
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt ArtifactKey.Arn
 
   # -------------------------------------------------------------------------
   # Log Group for CodeBuild
@@ -356,6 +419,9 @@ Resources:
       ArtifactStore:
         Type: S3
         Location: !Ref ArtifactBucket
+        EncryptionKey:
+          Id: !Ref ArtifactKey
+          Type: KMS
       Stages:
         # 1. Source
         - Name: Source
