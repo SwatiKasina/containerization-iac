@@ -1,0 +1,7 @@
+{
+  "Parameters": {
+    "EnvironmentName": "qa",
+    "VpcCidr": "10.1.0.0/16",
+    "ClusterVersion": "1.27"
+  }
+}

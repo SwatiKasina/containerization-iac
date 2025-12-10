@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: EKS Cluster Template using Cluster-Env Prefixing and SSM Inputs
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: Logical name of the cluster/project
+  EnvironmentName:
+    Type: String
+    Description: Environment name (e.g., dev, qa)
+  ClusterVersion:
+    Type: String
+    Description: EKS Cluster Version
+    Default: '1.27'
+
+  # Using SSM Parameters to fetch values dynamically
+  VpcId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: !Sub /${ClusterName}/${EnvironmentName}/vpc/id
+  PublicSubnetId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: !Sub /${ClusterName}/${EnvironmentName}/vpc/public-subnet
+  PrivateSubnetId:
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: !Sub /${ClusterName}/${EnvironmentName}/vpc/private-subnet
+
+Resources:
+  # EKS Cluster Role
+  EKSClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+
+  # EKS Cluster
+  EKSCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Sub ${ClusterName}-${EnvironmentName}-cluster
+      Version: !Ref ClusterVersion
+      RoleArn: !GetAtt EKSClusterRole.Arn
+      ResourcesVpcConfig:
+        SubnetIds:
+          # Read subnet IDs from SSM parameters
+          - !Ref PublicSubnetId
+          - !Ref PrivateSubnetId
+        SecurityGroupIds:
+          - !Ref ControlPlaneSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-${EnvironmentName}-cluster
+
+  # Security Group
+  ControlPlaneSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EKS Control Plane Security Group
+      VpcId: !Ref VpcId
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-${EnvironmentName}-eks-sg
+
+Outputs:
+  ClusterName:
+    Description: The name of the EKS Cluster
+    Value: !Ref EKSCluster
+    Export:
+      Name: !Sub ${ClusterName}-${EnvironmentName}-ClusterName
+
+  ClusterEndpoint:
+    Description: The endpoint of the EKS Cluster
+    Value: !GetAtt EKSCluster.Endpoint
+    Export:
+      Name: !Sub ${ClusterName}-${EnvironmentName}-ClusterEndpoint

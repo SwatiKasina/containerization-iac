@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: VPC Template with Cluster-Env Prefixing and SSM Outputs
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: Logical name of the cluster/project
+  EnvironmentName:
+    Type: String
+    Description: Environment name (e.g., dev, qa)
+  VpcCidr:
+    Type: String
+    Description: CIDR block for the VPC
+    Default: 10.0.0.0/16
+
+Resources:
+  # VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-${EnvironmentName}-vpc
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-${EnvironmentName}-igw
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Subnet
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [ 0, !Cidr [ !Ref VpcCidr, 2, 8 ] ]
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-${EnvironmentName}-public-subnet
+
+  # Private Subnet
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Select [ 1, !Cidr [ !Ref VpcCidr, 2, 8 ] ]
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-${EnvironmentName}-private-subnet
+
+  # SSM Parameters (Stored as /<ClusterName>/<EnvironmentName>/vpc/...)
+  VpcIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${ClusterName}/${EnvironmentName}/vpc/id
+      Type: String
+      Value: !Ref VPC
+
+  PublicSubnetParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${ClusterName}/${EnvironmentName}/vpc/public-subnet
+      Type: String
+      Value: !Ref PublicSubnet
+
+  PrivateSubnetParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /${ClusterName}/${EnvironmentName}/vpc/private-subnet
+      Type: String
+      Value: !Ref PrivateSubnet
+
+Outputs:
+  VpcId:
+    Description: The ID of the VPC
+    Value: !Ref VPC
+    Export:
+      Name: !Sub ${ClusterName}-${EnvironmentName}-VpcId
+
+  PublicSubnetId:
+    Description: The ID of the Public Subnet
+    Value: !Ref PublicSubnet
+    Export:
+      Name: !Sub ${ClusterName}-${EnvironmentName}-PublicSubnetId
+
+  PrivateSubnetId:
+    Description: The ID of the Private Subnet
+    Value: !Ref PrivateSubnet
+    Export:
+      Name: !Sub ${ClusterName}-${EnvironmentName}-PrivateSubnetId

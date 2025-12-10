@@ -1,0 +1,364 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Pipeline to deploy VPC and EKS Cluster to Dev and QA environments.
+  Creates its own S3 Bucket and IAM Roles based on the ClusterName.
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: Project or Cluster logical name (used for naming pipeline resources)
+    Default: my-eks-project
+  GitHubOwner:
+    Type: String
+    Description: GitHub Organization or User
+  GitHubRepo:
+    Type: String
+    Description: GitHub Repository Name
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: Branch to trigger the pipeline
+  CodeStarConnectionArn:
+    Type: String
+    Description: ARN of the CodeStar Connection for GitHub
+
+Resources:
+  # -------------------------------------------------------------------------
+  # S3 Bucket for Artifacts
+  # -------------------------------------------------------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${ClusterName}-pipeline-artifacts-${AWS::Region}-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # -------------------------------------------------------------------------
+  # IAM Roles
+  # -------------------------------------------------------------------------
+  
+  # 1. Pipeline Role
+  PipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ClusterName}-PipelineRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipelinePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:GetBucketVersioning
+                Resource: 
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub ${ArtifactBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource: !GetAtt BuildProject.Arn
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref CodeStarConnectionArn
+              - Effect: Allow
+                Action:
+                  - cloudformation:CreateStack
+                  - cloudformation:DeleteStack
+                  - cloudformation:DescribeStacks
+                  - cloudformation:UpdateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:SetStackPolicy
+                  - cloudformation:ValidateTemplate
+                Resource: !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ClusterName}-*
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt CloudFormationServiceRole.Arn
+
+  # 2. CodeBuild Role
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ClusterName}-CodeBuildRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ClusterName}-Build*
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                Resource: 
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub ${ArtifactBucket.Arn}/*
+
+  # 3. CloudFormation Deployment Role
+  # Used by CodePipeline to actually deploy the stacks (VPC, EKS)
+  CloudFormationServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ClusterName}-CFNDeployRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DeployPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # S3 Access for templates
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: 
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub ${ArtifactBucket.Arn}/*
+              # Permissions to create/manage the Resources in VPC/EKS Stacks
+              # Warning: AdministratorAccess is used here for simplicity.
+              # In production, scope this down to ec2:*, eks:*, iam:*, ssm:*, etc.
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+
+  # -------------------------------------------------------------------------
+  # CodeBuild Project: Package Artifacts
+  # -------------------------------------------------------------------------
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${ClusterName}-Build
+      Description: Packages source code and templates for deployment
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:4.0
+        Type: LINUX_CONTAINER
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - echo "Packaging artifacts..."
+                - echo "Commit ID: $CODEBUILD_RESOLVED_SOURCE_VERSION"
+                # Save Commit ID to file if needed for downstream use
+                - echo $CODEBUILD_RESOLVED_SOURCE_VERSION > commit_id.txt
+            post_build:
+              commands:
+                - echo "Build completed."
+          artifacts:
+            files:
+              - '**/*'
+            # Note: The artifact name here is for S3 export reference, 
+            # CodePipeline manages the flow internally.
+            name: !Sub "${ClusterName}-artifact-$CODEBUILD_RESOLVED_SOURCE_VERSION"
+
+  # -------------------------------------------------------------------------
+  # CodePipeline
+  # -------------------------------------------------------------------------
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${ClusterName}-Pipeline
+      RoleArn: !GetAtt PipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        # -------------------------------------------------------------------
+        # Stage 1: Source
+        # -------------------------------------------------------------------
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: '1'
+              Configuration:
+                ConnectionArn: !Ref CodeStarConnectionArn
+                FullRepositoryId: !Sub ${GitHubOwner}/${GitHubRepo}
+                BranchName: !Ref GitHubBranch
+                OutputArtifactFormat: CODEBUILD_CLONE_REF
+              OutputArtifacts:
+                - Name: SourceArtifact
+
+        # -------------------------------------------------------------------
+        # Stage 2: Build
+        # -------------------------------------------------------------------
+        - Name: Build
+          Actions:
+            - Name: PackageCode
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref BuildProject
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+
+        # -------------------------------------------------------------------
+        # Stage 3: Deploy to DEV
+        # -------------------------------------------------------------------
+        - Name: DeployDev
+          Actions:
+            # 3.1: Create/Update Dev VPC
+            - Name: Dev-VPC
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: !Sub ${ClusterName}-Dev-VPC
+                Capabilities: CAPABILITY_NAMED_IAM
+                RoleArn: !GetAtt CloudFormationServiceRole.Arn
+                TemplatePath: !Sub BuildArtifact::${ClusterName}/cfn/vpc.yaml
+                TemplateConfiguration: !Sub BuildArtifact::${ClusterName}/params/dev.json
+                ParameterOverrides: !Sub |
+                  {
+                    "ClusterName": "${ClusterName}"
+                  }
+              InputArtifacts:
+                - Name: BuildArtifact
+              RunOrder: 1
+
+            # 3.2: Create/Update Dev Cluster (Runs after VPC)
+            - Name: Dev-Cluster
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: !Sub ${ClusterName}-Dev-Cluster
+                Capabilities: CAPABILITY_NAMED_IAM
+                RoleArn: !GetAtt CloudFormationServiceRole.Arn
+                TemplatePath: !Sub BuildArtifact::${ClusterName}/cfn/eks-cluster.yaml
+                TemplateConfiguration: !Sub BuildArtifact::${ClusterName}/params/dev.json
+                ParameterOverrides: !Sub |
+                  {
+                    "ClusterName": "${ClusterName}"
+                  }
+              InputArtifacts:
+                - Name: BuildArtifact
+              RunOrder: 2
+
+        # -------------------------------------------------------------------
+        # Stage 4: Manual Approval
+        # -------------------------------------------------------------------
+        - Name: Approval
+          Actions:
+            - Name: ApprovePromoteToQA
+              ActionTypeId:
+                Category: Approval
+                Owner: AWS
+                Provider: Manual
+                Version: '1'
+              RunOrder: 1
+
+        # -------------------------------------------------------------------
+        # Stage 5: Deploy to QA
+        # -------------------------------------------------------------------
+        - Name: DeployQA
+          Actions:
+            # 5.1: Create/Update QA VPC
+            - Name: QA-VPC
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: !Sub ${ClusterName}-QA-VPC
+                Capabilities: CAPABILITY_NAMED_IAM
+                RoleArn: !GetAtt CloudFormationServiceRole.Arn
+                TemplatePath: !Sub BuildArtifact::${ClusterName}/cfn/vpc.yaml
+                TemplateConfiguration: !Sub BuildArtifact::${ClusterName}/params/qa.json
+                ParameterOverrides: !Sub |
+                  {
+                    "ClusterName": "${ClusterName}"
+                  }
+              InputArtifacts:
+                - Name: BuildArtifact
+              RunOrder: 1
+
+            # 5.2: Create/Update QA Cluster (Runs after VPC)
+            - Name: QA-Cluster
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                StackName: !Sub ${ClusterName}-QA-Cluster
+                Capabilities: CAPABILITY_NAMED_IAM
+                RoleArn: !GetAtt CloudFormationServiceRole.Arn
+                TemplatePath: !Sub BuildArtifact::${ClusterName}/cfn/eks-cluster.yaml
+                TemplateConfiguration: !Sub BuildArtifact::${ClusterName}/params/qa.json
+                ParameterOverrides: !Sub |
+                  {
+                    "ClusterName": "${ClusterName}"
+                  }
+              InputArtifacts:
+                - Name: BuildArtifact
+              RunOrder: 2
+
+Outputs:
+  PipelineUrl:
+    Value: !Sub https://${AWS::Region}.console.aws.amazon.com/codesuite/codepipeline/pipelines/${Pipeline}/view
+    Description: URL of the created pipeline
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
+    Description: Name of the created S3 artifact bucket
