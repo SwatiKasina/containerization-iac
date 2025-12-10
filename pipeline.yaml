@@ -37,26 +37,12 @@ Resources:
         Id: !Sub ${ClusterName}-KeyPolicy
         Statement:
           # Allow Root User (Admin) to manage key
+          # This delegates access control to IAM policies, avoiding circular dependencies with the Service Roles.
           - Sid: Enable IAM User Permissions
             Effect: Allow
             Principal:
               AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
             Action: kms:*
-            Resource: '*'
-          # Allow Pipeline, CodeBuild, CloudFormation Roles to use key
-          - Sid: Allow Service Roles
-            Effect: Allow
-            Principal:
-              AWS:
-                - !GetAtt PipelineServiceRole.Arn
-                - !GetAtt CodeBuildServiceRole.Arn
-                - !GetAtt CloudFormationServiceRole.Arn
-            Action:
-              - kms:Encrypt
-              - kms:Decrypt
-              - kms:ReEncrypt*
-              - kms:GenerateDataKey*
-              - kms:DescribeKey
             Resource: '*'
 
   ArtifactKeyAlias:
