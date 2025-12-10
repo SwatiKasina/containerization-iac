@@ -12,6 +12,7 @@ The solution uses **AWS CloudFormation**, **CodePipeline**, and **CodeBuild** to
 - **Environment Isolation**: Separate deployments for Dev and QA with independent parameter files.
 - **Manual Promotion**: Automated deployment to Dev, followed by a manual approval step before deploying to QA.
 - **Artifact Versioning**: Builds are tagged with the specific Commit ID.
+- **Validation**: Automatically runs `cfn-lint` on templates during the build phase.
 
 ## Repository Structure
 

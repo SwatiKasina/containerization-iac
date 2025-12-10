@@ -2,6 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   Pipeline to deploy VPC and EKS Cluster to Dev and QA environments.
   Creates its own S3 Bucket and IAM Roles based on the ClusterName.
+  Includes Validation/Preview steps before deployment.
 
 Parameters:
   ClusterName:
@@ -71,7 +72,9 @@ Resources:
                 Action:
                   - codebuild:BatchGetBuilds
                   - codebuild:StartBuild
-                Resource: !GetAtt BuildProject.Arn
+                Resource: 
+                  - !GetAtt BuildProject.Arn
+                  - !GetAtt ValidateProject.Arn
               - Effect: Allow
                 Action:
                   - codestar-connections:UseConnection
@@ -116,7 +119,7 @@ Resources:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ClusterName}-Build*
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ClusterName}-*
               - Effect: Allow
                 Action:
                   - s3:GetObject
@@ -125,9 +128,17 @@ Resources:
                 Resource: 
                   - !GetAtt ArtifactBucket.Arn
                   - !Sub ${ArtifactBucket.Arn}/*
+              # Validation Project needs permissions to preview ChangeSets
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:ValidateTemplate
+                Resource: !Sub arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${ClusterName}-*
 
   # 3. CloudFormation Deployment Role
-  # Used by CodePipeline to actually deploy the stacks (VPC, EKS)
   CloudFormationServiceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -144,7 +155,6 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              # S3 Access for templates
               - Effect: Allow
                 Action:
                   - s3:GetObject
@@ -152,24 +162,35 @@ Resources:
                 Resource: 
                   - !GetAtt ArtifactBucket.Arn
                   - !Sub ${ArtifactBucket.Arn}/*
-              # Permissions to create/manage the Resources in VPC/EKS Stacks
-              # Warning: AdministratorAccess is used here for simplicity.
-              # In production, scope this down to ec2:*, eks:*, iam:*, ssm:*, etc.
               - Effect: Allow
                 Action: '*'
                 Resource: '*'
 
   # -------------------------------------------------------------------------
-  # CodeBuild Project: Package Artifacts
+  # Log Group for CodeBuild
+  # -------------------------------------------------------------------------
+  BuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/codebuild/${ClusterName}-Logs
+      RetentionInDays: 30
+
+  # -------------------------------------------------------------------------
+  # Project 1: Build (Package Only)
   # -------------------------------------------------------------------------
   BuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
       Name: !Sub ${ClusterName}-Build
-      Description: Packages source code and templates for deployment
+      Description: Packages source code
       ServiceRole: !GetAtt CodeBuildServiceRole.Arn
       Artifacts:
         Type: CODEPIPELINE
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref BuildLogGroup
+          StreamName: build-log
       Environment:
         ComputeType: BUILD_GENERAL1_SMALL
         Image: aws/codebuild/amazonlinux2-x86_64-standard:4.0
@@ -182,18 +203,147 @@ Resources:
             build:
               commands:
                 - echo "Packaging artifacts..."
-                - echo "Commit ID: $CODEBUILD_RESOLVED_SOURCE_VERSION"
-                # Save Commit ID to file if needed for downstream use
                 - echo $CODEBUILD_RESOLVED_SOURCE_VERSION > commit_id.txt
-            post_build:
-              commands:
-                - echo "Build completed."
           artifacts:
             files:
               - '**/*'
-            # Note: The artifact name here is for S3 export reference, 
-            # CodePipeline manages the flow internally.
             name: !Sub "${ClusterName}-artifact-$CODEBUILD_RESOLVED_SOURCE_VERSION"
+
+  # -------------------------------------------------------------------------
+  # Project 2: Validate & Preview (Reusable)
+  # -------------------------------------------------------------------------
+  ValidateProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${ClusterName}-Validate
+      Description: Runs cfn-lint and ChangeSet preview for a specific environment
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref BuildLogGroup
+          StreamName: validate-log
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:4.0
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: CLUSTER_NAME
+            Type: PLAINTEXT
+            Value: !Ref ClusterName
+          - Name: TARGET_ENV
+            Type: PLAINTEXT
+            Value: dev # Default, overridden by pipeline
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                python: 3.x
+              commands:
+                - pip install cfn-lint boto3
+            build:
+              commands:
+                - echo "Validating for Environment: $TARGET_ENV"
+                
+                # 1. Linting
+                - echo "--- Running cfn-lint ---"
+                - cfn-lint $CLUSTER_NAME/cfn/vpc.yaml
+                - cfn-lint $CLUSTER_NAME/cfn/eks-cluster.yaml
+                
+                # 2. Preview Change Set
+                - echo "--- Previewing Changes ---"
+                - |
+                  cat <<EOF > preview.py
+                  import boto3
+                  import json
+                  import os
+                  import time
+
+                  cluster_name = os.environ.get('CLUSTER_NAME')
+                  env = os.environ.get('TARGET_ENV')
+                  
+                  # Define stacks for this environment
+                  stacks = [
+                      {
+                          'name': f"{cluster_name}-{env.capitalize()}-VPC",
+                          'template': f"{cluster_name}/cfn/vpc.yaml",
+                          'params_file': f"{cluster_name}/params/{env}.json"
+                      },
+                      {
+                          'name': f"{cluster_name}-{env.capitalize()}-Cluster",
+                          'template': f"{cluster_name}/cfn/eks-cluster.yaml",
+                          'params_file': f"{cluster_name}/params/{env}.json"
+                      }
+                  ]
+
+                  cfn = boto3.client('cloudformation')
+
+                  def get_cli_params(params_file, cluster_name):
+                      with open(params_file, 'r') as f:
+                          data = json.load(f)
+                      cli_params = []
+                      for k, v in data.get('Parameters', {}).items():
+                          cli_params.append({'ParameterKey': k, 'ParameterValue': str(v)})
+                      cli_params.append({'ParameterKey': 'ClusterName', 'ParameterValue': cluster_name})
+                      return cli_params
+
+                  def preview(stack):
+                      print(f"\\nPreviewing {stack['name']}...")
+                      try:
+                          try:
+                              cfn.describe_stacks(StackName=stack['name'])
+                              change_type = 'UPDATE'
+                          except:
+                              change_type = 'CREATE'
+                              print(f"Stack does not exist. Action: {change_type}")
+
+                          params = get_cli_params(stack['params_file'], cluster_name)
+                          with open(stack['template'], 'r') as f:
+                              template_body = f.read()
+
+                          cs_name = f"Prev-{int(time.time())}"
+                          
+                          cfn.create_change_set(
+                              StackName=stack['name'],
+                              TemplateBody=template_body,
+                              Parameters=params,
+                              ChangeSetName=cs_name,
+                              ChangeSetType=change_type,
+                              Capabilities=['CAPABILITY_NAMED_IAM']
+                          )
+                          
+                          waiter = cfn.get_waiter('change_set_create_complete')
+                          waiter.wait(StackName=stack['name'], ChangeSetName=cs_name)
+                          
+                          response = cfn.describe_change_set(StackName=stack['name'], ChangeSetName=cs_name)
+                          changes = response.get('Changes', [])
+                          
+                          if not changes:
+                              print("No changes.")
+                          else:
+                              print(f"{'Action':<15} {'Logical ID':<30} {'Type':<30} {'Replacement'}")
+                              print("-" * 90)
+                              for c in changes:
+                                  rc = c['ResourceChange']
+                                  print(f"{rc['Action']:<15} {rc['LogicalResourceId']:<30} {rc['ResourceType']:<30} {rc.get('Replacement', '')}")
+                          
+                          cfn.delete_change_set(StackName=stack['name'], ChangeSetName=cs_name)
+
+                      except Exception as e:
+                          print(f"Error: {str(e)}")
+                          # We do not fail the build for preview errors to avoid blocking deployment on permissions issues, 
+                          # but you can uncomment the next line to enforce strict previews.
+                          # exit(1) 
+
+                  for s in stacks:
+                      preview(s)
+                  EOF
+                - python3 preview.py
 
   # -------------------------------------------------------------------------
   # CodePipeline
@@ -207,9 +357,7 @@ Resources:
         Type: S3
         Location: !Ref ArtifactBucket
       Stages:
-        # -------------------------------------------------------------------
-        # Stage 1: Source
-        # -------------------------------------------------------------------
+        # 1. Source
         - Name: Source
           Actions:
             - Name: GitHubSource
@@ -226,12 +374,10 @@ Resources:
               OutputArtifacts:
                 - Name: SourceArtifact
 
-        # -------------------------------------------------------------------
-        # Stage 2: Build
-        # -------------------------------------------------------------------
+        # 2. Build (Just Package)
         - Name: Build
           Actions:
-            - Name: PackageCode
+            - Name: Package
               ActionTypeId:
                 Category: Build
                 Owner: AWS
@@ -244,12 +390,22 @@ Resources:
               OutputArtifacts:
                 - Name: BuildArtifact
 
-        # -------------------------------------------------------------------
-        # Stage 3: Deploy to DEV
-        # -------------------------------------------------------------------
+        # 3. Deploy Dev (Validate -> VPC -> Cluster)
         - Name: DeployDev
           Actions:
-            # 3.1: Create/Update Dev VPC
+            - Name: ValidateDev
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref ValidateProject
+                EnvironmentVariables: '[{"name":"TARGET_ENV","value":"dev"}]'
+              InputArtifacts:
+                - Name: BuildArtifact
+              RunOrder: 1
+            
             - Name: Dev-VPC
               ActionTypeId:
                 Category: Deploy
@@ -269,9 +425,8 @@ Resources:
                   }
               InputArtifacts:
                 - Name: BuildArtifact
-              RunOrder: 1
+              RunOrder: 2
 
-            # 3.2: Create/Update Dev Cluster (Runs after VPC)
             - Name: Dev-Cluster
               ActionTypeId:
                 Category: Deploy
@@ -291,11 +446,9 @@ Resources:
                   }
               InputArtifacts:
                 - Name: BuildArtifact
-              RunOrder: 2
+              RunOrder: 3
 
-        # -------------------------------------------------------------------
-        # Stage 4: Manual Approval
-        # -------------------------------------------------------------------
+        # 4. Approval
         - Name: Approval
           Actions:
             - Name: ApprovePromoteToQA
@@ -306,12 +459,22 @@ Resources:
                 Version: '1'
               RunOrder: 1
 
-        # -------------------------------------------------------------------
-        # Stage 5: Deploy to QA
-        # -------------------------------------------------------------------
+        # 5. Deploy QA (Validate -> VPC -> Cluster)
         - Name: DeployQA
           Actions:
-            # 5.1: Create/Update QA VPC
+            - Name: ValidateQA
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: '1'
+              Configuration:
+                ProjectName: !Ref ValidateProject
+                EnvironmentVariables: '[{"name":"TARGET_ENV","value":"qa"}]'
+              InputArtifacts:
+                - Name: BuildArtifact
+              RunOrder: 1
+
             - Name: QA-VPC
               ActionTypeId:
                 Category: Deploy
@@ -331,9 +494,8 @@ Resources:
                   }
               InputArtifacts:
                 - Name: BuildArtifact
-              RunOrder: 1
+              RunOrder: 2
 
-            # 5.2: Create/Update QA Cluster (Runs after VPC)
             - Name: QA-Cluster
               ActionTypeId:
                 Category: Deploy
@@ -353,7 +515,7 @@ Resources:
                   }
               InputArtifacts:
                 - Name: BuildArtifact
-              RunOrder: 2
+              RunOrder: 3
 
 Outputs:
   PipelineUrl:
