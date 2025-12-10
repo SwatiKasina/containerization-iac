@@ -8,6 +8,7 @@ The solution uses **AWS CloudFormation**, **CodePipeline**, and **CodeBuild** to
 
 ### Key Features
 - **Dynamic Pipeline**: The pipeline adapts to the `ClusterName` parameter.
+- **Self-Contained Resources**: The pipeline stack creates its own S3 artifact bucket and IAM roles, scoped to the cluster.
 - **Environment Isolation**: Separate deployments for Dev and QA with independent parameter files.
 - **Manual Promotion**: Automated deployment to Dev, followed by a manual approval step before deploying to QA.
 - **Artifact Versioning**: Builds are tagged with the specific Commit ID.
@@ -31,14 +32,10 @@ The project follows a directory-per-cluster pattern:
 
 ## Prerequisites
 
-Before deploying the pipeline, ensure you have the following AWS resources ready:
+Before deploying the pipeline, ensure you have:
 
 1.  **CodeStar Connection**: A connection to your GitHub repository.
-2.  **S3 Bucket**: A bucket to store pipeline artifacts.
-3.  **IAM Roles**:
-    *   `PipelineServiceRole`: For CodePipeline.
-    *   `CodeBuildServiceRole`: For CodeBuild projects.
-    *   `CloudFormationServiceRole`: For CloudFormation to create resources (VPC, EKS, etc.).
+2.  **Admin Access**: The user deploying the pipeline stack needs permissions to create IAM Roles and S3 Buckets.
 
 ## How to Onboard a New Cluster
 
@@ -52,7 +49,7 @@ To deploy a new cluster (e.g., named `analytics-cluster`):
 
 ## Deployment Instructions
 
-Run the following command to deploy the pipeline for your cluster. Replace the placeholder values with your specific configuration.
+Run the following command to deploy the pipeline for your cluster. The pipeline stack will automatically create the necessary S3 bucket and IAM roles.
 
 ```bash
 aws cloudformation deploy \
@@ -64,10 +61,6 @@ aws cloudformation deploy \
     GitHubRepo="containerization-iac" \
     GitHubBranch="main" \
     CodeStarConnectionArn="arn:aws:codestar-connections:us-east-1:123456789012:connection/example-uuid" \
-    ArtifactBucketName="your-artifact-bucket-name" \
-    PipelineServiceRoleArn="arn:aws:iam::123456789012:role/service-role/AWSCodePipelineServiceRole" \
-    CodeBuildServiceRoleArn="arn:aws:iam::123456789012:role/service-role/codebuild-service-role" \
-    CloudFormationServiceRoleArn="arn:aws:iam::123456789012:role/CloudFormationDeployRole" \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
