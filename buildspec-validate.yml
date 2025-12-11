@@ -3,14 +3,16 @@ version: 0.2
 phases:
   install:
     commands:
+      - set -eu
       - echo "Installing dependencies..."
       - pip3 install cfn-lint boto3
   
   build:
     commands:
+      - set -eu
       - echo "========================================="
-      - echo "Cluster Name: $CLUSTER_NAME"
-      - echo "Target Environment: $TARGET_ENV"
+      - echo "Cluster Name - $CLUSTER_NAME"
+      - echo "Target Environment - $TARGET_ENV"
       - echo "========================================="
       - echo "Running cfn-lint validation on VPC template..."
       - cfn-lint $CLUSTER_NAME/cfn/vpc.yaml

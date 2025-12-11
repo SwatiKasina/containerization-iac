@@ -2,14 +2,14 @@ version: 0.2
 
 phases:
   install:
-    runtime-versions:
-      python: 3.x
     commands:
+      - set -eu
       - echo "Installing dependencies..."
-      - pip install cfn-lint boto3
+      - pip3 install cfn-lint boto3
   
   build:
     commands:
+      - set -eu
       - echo "Packaging artifacts..."
       - echo $CODEBUILD_RESOLVED_SOURCE_VERSION > commit_id.txt
       - echo "Build completed on $(date)"
