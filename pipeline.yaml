@@ -360,7 +360,7 @@ Resources:
                 Capabilities: CAPABILITY_NAMED_IAM
                 RoleArn: !GetAtt CloudFormationServiceRole.Arn
                 TemplatePath: !Sub BuildArtifact::${ClusterName}/cfn/vpc.yaml
-                TemplateConfiguration: !Sub BuildArtifact::${ClusterName}/params/dev.json
+                TemplateConfiguration: !Sub BuildArtifact::${ClusterName}/params/dev-vpc.json
                 ParameterOverrides: !Sub |
                   {
                     "ClusterName": "${ClusterName}"
@@ -381,7 +381,7 @@ Resources:
                 Capabilities: CAPABILITY_NAMED_IAM
                 RoleArn: !GetAtt CloudFormationServiceRole.Arn
                 TemplatePath: !Sub BuildArtifact::${ClusterName}/cfn/eks-cluster.yaml
-                TemplateConfiguration: !Sub BuildArtifact::${ClusterName}/params/dev.json
+                TemplateConfiguration: !Sub BuildArtifact::${ClusterName}/params/dev-eks.json
                 ParameterOverrides: !Sub |
                   {
                     "ClusterName": "${ClusterName}"
