@@ -8,8 +8,16 @@ phases:
   
   build:
     commands:
-      - echo "Validating for Environment $TARGET_ENV"
-      - echo "Running cfn-lint on VPC template"
+      - echo "========================================="
+      - echo "Cluster Name: $CLUSTER_NAME"
+      - echo "Target Environment: $TARGET_ENV"
+      - echo "========================================="
+      - echo "Running cfn-lint validation on VPC template..."
       - cfn-lint $CLUSTER_NAME/cfn/vpc.yaml
-      - echo "Running cfn-lint on EKS cluster template"
+      - echo "VPC template validation passed!"
+      - echo "Running cfn-lint validation on EKS cluster template..."
       - cfn-lint $CLUSTER_NAME/cfn/eks-cluster.yaml
+      - echo "EKS cluster template validation passed!"
+      - echo "========================================="
+      - echo "All validations completed successfully!"
+      - echo "========================================="
