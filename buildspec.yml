@@ -1,0 +1,20 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.x
+    commands:
+      - echo "Installing dependencies..."
+      - pip install cfn-lint boto3
+  
+  build:
+    commands:
+      - echo "Packaging artifacts..."
+      - echo $CODEBUILD_RESOLVED_SOURCE_VERSION > commit_id.txt
+      - echo "Build completed on $(date)"
+
+artifacts:
+  files:
+    - '**/*'
+  name: artifact-$CODEBUILD_RESOLVED_SOURCE_VERSION
