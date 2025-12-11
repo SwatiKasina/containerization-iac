@@ -2,6 +2,9 @@
   "Parameters": {
     "EnvironmentName": "qa",
     "VpcCidr": "10.1.0.0/16",
-    "ClusterVersion": "1.27"
+    "ClusterVersion": "1.27",
+    "VpcId": "/test-gateway/qa/vpc/id",
+    "PublicSubnetId": "/test-gateway/qa/vpc/public-subnet",
+    "PrivateSubnetId": "/test-gateway/qa/vpc/private-subnet"
   }
 }

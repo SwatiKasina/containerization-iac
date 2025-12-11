@@ -16,13 +16,13 @@ Parameters:
   # Using SSM Parameters to fetch values dynamically
   VpcId:
     Type: AWS::SSM::Parameter::Value<String>
-    Default: !Sub /${ClusterName}/${EnvironmentName}/vpc/id
+    Description: SSM Parameter path for VPC ID
   PublicSubnetId:
     Type: AWS::SSM::Parameter::Value<String>
-    Default: !Sub /${ClusterName}/${EnvironmentName}/vpc/public-subnet
+    Description: SSM Parameter path for Public Subnet ID
   PrivateSubnetId:
     Type: AWS::SSM::Parameter::Value<String>
-    Default: !Sub /${ClusterName}/${EnvironmentName}/vpc/private-subnet
+    Description: SSM Parameter path for Private Subnet ID
 
 Resources:
   # EKS Cluster Role
