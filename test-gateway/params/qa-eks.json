@@ -1,7 +1,7 @@
 {
   "Parameters": {
     "EnvironmentName": "qa",
-    "ClusterVersion": "1.27",
+    "ClusterVersion": "1.31",
     "VpcId": "/test-gateway/qa/vpc/id",
     "PublicSubnetId": "/test-gateway/qa/vpc/public-subnet",
     "PrivateSubnetId": "/test-gateway/qa/vpc/private-subnet"

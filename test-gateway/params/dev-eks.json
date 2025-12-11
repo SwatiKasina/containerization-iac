@@ -1,7 +1,7 @@
 {
   "Parameters": {
     "EnvironmentName": "dev",
-    "ClusterVersion": "1.27",
+    "ClusterVersion": "1.31",
     "VpcId": "/test-gateway/dev/vpc/id",
     "PublicSubnetId": "/test-gateway/dev/vpc/public-subnet",
     "PrivateSubnetId": "/test-gateway/dev/vpc/private-subnet"

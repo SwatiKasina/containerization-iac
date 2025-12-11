@@ -11,7 +11,7 @@ Parameters:
   ClusterVersion:
     Type: String
     Description: EKS Cluster Version
-    Default: '1.27'
+    Default: '1.31'
 
   # Using SSM Parameters to fetch values dynamically
   VpcId:
