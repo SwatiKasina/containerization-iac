@@ -251,19 +251,7 @@ Resources:
         Type: LINUX_CONTAINER
       Source:
         Type: CODEPIPELINE
-        BuildSpec: |
-          version: 0.2
-          phases:
-            build:
-              commands:
-                - echo "Packaging artifacts..."
-                - echo $CODEBUILD_RESOLVED_SOURCE_VERSION > commit_id.txt
-          artifacts:
-            files:
-              - '**/*'
-            # Avoid CloudFormation intrinsics inside the buildspec so CodeBuild doesn't see !Sub
-            # The artifact name will just use the resolved commit ID at build time.
-            name: "artifact-$CODEBUILD_RESOLVED_SOURCE_VERSION"
+        BuildSpec: buildspec.yml
 
   # -------------------------------------------------------------------------
   # Project 2: Validate & Preview (Reusable)
@@ -294,21 +282,7 @@ Resources:
             Value: dev # Default, overridden by pipeline
       Source:
         Type: CODEPIPELINE
-        BuildSpec: |
-          version: 0.2
-          phases:
-            install:
-              runtime-versions:
-                python: 3.x
-              commands:
-                - pip install cfn-lint boto3
-            build:
-              commands:
-                - echo "Validating for Environment: $TARGET_ENV"
-                - echo "Running cfn-lint on VPC template..."
-                - cfn-lint $CLUSTER_NAME/cfn/vpc.yaml
-                - echo "Running cfn-lint on EKS cluster template..."
-                - cfn-lint $CLUSTER_NAME/cfn/eks-cluster.yaml
+        BuildSpec: buildspec-validate.yml
 
   # -------------------------------------------------------------------------
   # CodePipeline

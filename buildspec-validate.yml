@@ -1,0 +1,15 @@
+version: 0.2
+
+phases:
+  install:
+    commands:
+      - echo "Installing dependencies..."
+      - pip3 install cfn-lint boto3
+  
+  build:
+    commands:
+      - echo "Validating for Environment $TARGET_ENV"
+      - echo "Running cfn-lint on VPC template"
+      - cfn-lint $CLUSTER_NAME/cfn/vpc.yaml
+      - echo "Running cfn-lint on EKS cluster template"
+      - cfn-lint $CLUSTER_NAME/cfn/eks-cluster.yaml
